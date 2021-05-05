@@ -1,4 +1,6 @@
-﻿//----------------------------------------------------
+﻿using System.Globalization;
+using System.Collections.Generic;
+//----------------------------------------------------
 // Copyright 2021 Epic Systems Corporation
 //----------------------------------------------------
 
@@ -10,6 +12,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.IO;
 
 namespace cowin_poller
 {
@@ -19,6 +22,8 @@ namespace cowin_poller
         private static readonly string baseURL = "https://cdn-api.co-vin.in/api/v2/";
 
         private static Timer timer;
+
+        private static Dictionary<int, Coordinates> pinMap = new Dictionary<int, Coordinates>();
         public Program()
         {
             client.DefaultRequestHeaders
@@ -34,20 +39,66 @@ namespace cowin_poller
         // }
         static void Main(string[] args)
         {
+            createPinMap();
             //https://github.com/bhattbhavesh91/cowin-vaccination-slot-availability/blob/main/district_mapping.csv
             Poll("atulmirajkar@gmail.com", 363, 18.65, 73.8, 44, 5);
         }
+
+        private static void createPinMap()
+        {
+            //http://www.geonames.org/export/zip/ --> IN.zip --> contains only maharashtra
+            string filePath = "pin.csv";
+            Dictionary<int, List<Coordinates>> meanMap = new Dictionary<int, List<Coordinates>>();
+            using (StreamReader sr = File.OpenText(filePath))
+            {
+                string s;
+                while ((s = sr.ReadLine()) != null)
+                {
+                    var splitArr = s.Split(",",3);
+                    var pin = Int32.Parse(splitArr[0]);
+                    if(!meanMap.ContainsKey(pin)){
+                        meanMap[pin] = new List<Coordinates>();
+                    }
+                    meanMap[pin].Add(new Coordinates(double.Parse(splitArr[1]), double.Parse(splitArr[2])));
+                }
+            }
+
+            foreach(int pin in meanMap.Keys){
+                double lat;
+                double lng;
+                getMeanLatLng(meanMap[pin],out lat, out lng);
+                pinMap[pin] = new Coordinates(lat, lng);
+            }
+
+        }
+
+        private static void getMeanLatLng(List<Coordinates> coordinates, out double lat, out double lng){
+            double totalLat = 0.0;
+            double totalLng = 0.0;
+            lat = 0.0;
+            lng = 0.0;
+            if(coordinates == null || coordinates.Count == 0) return;
+
+            foreach(Coordinates coord in coordinates){
+                totalLat += coord.lat;
+                totalLng += coord.lng;
+            }
+
+            lat = totalLat/coordinates.Count;
+            lng = totalLng/coordinates.Count;
+        }
         private static void Poll(string email, int districtID, double interestedLat, double interestedLng, int minAgeLimit, int minutes = 15)
         {
-            var state = new CallbackState{email=email, districtID=districtID, interestedLat = interestedLat,minAgeLimit=minAgeLimit, minutes = minutes};
+            var state = new CallbackState { email = email, districtID = districtID, interestedLat = interestedLat, interestedLng=interestedLng, minAgeLimit = minAgeLimit, minutes = minutes };
             timer = new Timer(processRequestCallback, state, 1000, Timeout.Infinite);
             Thread.Sleep(Timeout.Infinite);
         }
 
-        public static async void processRequestCallback(object state){
+        public static async void processRequestCallback(object state)
+        {
             var callbackState = state as CallbackState;
-            await ProcessRequest(callbackState.email, callbackState.districtID, callbackState.interestedLat,callbackState.interestedLng,callbackState.minAgeLimit);
-            timer.Change(callbackState.minutes*60*1000,Timeout.Infinite);
+            await ProcessRequest(callbackState.email, callbackState.districtID, callbackState.interestedLat, callbackState.interestedLng, callbackState.minAgeLimit);
+            timer.Change(callbackState.minutes * 60 * 1000, Timeout.Infinite);
         }
 
         private static async Task ProcessRequest(string email, int districtID, double interestedLat, double interestedLng, int minAgeLimit)
@@ -56,7 +107,6 @@ namespace cowin_poller
             var url = baseURL + "appointment/sessions/public/calendarByDistrict?district_id=" + districtID + "&date=" + getTodaysDate();
             var streamCalendar = client.GetStreamAsync(url);
             var json = await streamCalendar;
-            Console.WriteLine(json.ToString());
             var calendar = await JsonSerializer.DeserializeAsync<Calendar>(json);
 
             //sort calendars by interested lat and interested long
@@ -64,6 +114,10 @@ namespace cowin_poller
             {
                 center.interestedLat = interestedLat;
                 center.interestedLng = interestedLng;
+                if(pinMap.ContainsKey(center.Pincode)){
+                    center.Lat = pinMap[center.Pincode].lat;
+                    center.Long = pinMap[center.Pincode].lng;
+                }
             }
             calendar.Centers.Sort();
             var htmlContent = createContent(calendar, minAgeLimit);
@@ -88,12 +142,12 @@ namespace cowin_poller
 
             foreach (Center center in calendar.Centers)
             {
-                if(center.Lat==0 || center.Long==0) continue;
+                if (center.Lat == 0 || center.Long == 0) continue;
 
                 string sessionStr = "";
                 foreach (SessionCalendar sessionCal in center.Sessions)
                 {
-                    if (sessionCal.MinAgeLimit < minAgeLimit || sessionCal.AvailableCapacity<1) continue;
+                    if (sessionCal.MinAgeLimit < minAgeLimit || sessionCal.AvailableCapacity < 1) continue;
                     sessionStr += $"<div></div>";
                     sessionStr += $"<div>Date: {sessionCal.Date}</div>";
                     sessionStr += $"<div>Min Age: {sessionCal.MinAgeLimit}</div>";
@@ -116,6 +170,8 @@ namespace cowin_poller
                 centerStr = centerStr + $"<h2>{center.BlockName}</h2>";
                 centerStr = centerStr + $"<h2>{center.Pincode}</h2>";
                 centerStr = centerStr + $"<h2>{center.Lat},{center.Long}</h2>";
+                centerStr = centerStr + $"<h2>{center.distance}</h2>";
+                
 
                 centerStr = centerStr + $"<div>Fee Type: {center.FeeType}</div>";
                 if (center.VaccineFees != null)

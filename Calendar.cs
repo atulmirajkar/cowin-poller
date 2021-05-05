@@ -76,11 +76,13 @@ namespace cowin_poller
 
         public double interestedLat { get; set; }
         public double interestedLng { get; set; }
+        public double distance{get; set;}
         public int CompareTo([AllowNull] Center other)
         {
             if (other == null) return 1;
 
             var thisDistance = Math.Sqrt(((this.Lat - interestedLat) * (this.Lat - interestedLat)) + ((this.Long - interestedLng) * (this.Long - interestedLng)));
+            this.distance = thisDistance;
             var otherDistance = Math.Sqrt(((other.Lat - interestedLat) * (other.Lat - interestedLat)) + ((other.Long - interestedLng) * (other.Long - interestedLng)));
             return thisDistance.CompareTo(otherDistance);
         }
