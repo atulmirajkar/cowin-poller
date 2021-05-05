@@ -60,10 +60,10 @@ namespace cowin_poller
         public double Long { get; set; }
 
         [JsonPropertyName("from")]
-        public DateTimeOffset From { get; set; }
+        public string From { get; set; }
 
         [JsonPropertyName("to")]
-        public DateTimeOffset To { get; set; }
+        public string To { get; set; }
 
         [JsonPropertyName("fee_type")]
         public string FeeType { get; set; }
@@ -114,6 +114,6 @@ namespace cowin_poller
         public string Vaccine { get; set; }
 
         [JsonPropertyName("fee")]
-        public decimal Fee { get; set; }
+        public string Fee { get; set; }
     }
 }
