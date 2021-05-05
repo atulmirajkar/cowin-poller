@@ -1,4 +1,6 @@
-﻿using System.Globalization;
+﻿using System.Security.Cryptography;
+using System.Runtime.Intrinsics.Arm.Arm64;
+using System.Globalization;
 using System.Collections.Generic;
 //----------------------------------------------------
 // Copyright 2021 Epic Systems Corporation
@@ -13,6 +15,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
+using System.Text;
 
 namespace cowin_poller
 {
@@ -24,6 +27,10 @@ namespace cowin_poller
         private static Timer timer;
 
         private static Dictionary<int, Coordinates> pinMap = new Dictionary<int, Coordinates>();
+
+        private static SHA256 sha256Hash = SHA256.Create();
+
+        private static Dictionary<long, string> changeMap = new Dictionary<long, string>();
         public Program()
         {
             client.DefaultRequestHeaders
@@ -54,42 +61,46 @@ namespace cowin_poller
                 string s;
                 while ((s = sr.ReadLine()) != null)
                 {
-                    var splitArr = s.Split(",",3);
+                    var splitArr = s.Split(",", 3);
                     var pin = Int32.Parse(splitArr[0]);
-                    if(!meanMap.ContainsKey(pin)){
+                    if (!meanMap.ContainsKey(pin))
+                    {
                         meanMap[pin] = new List<Coordinates>();
                     }
                     meanMap[pin].Add(new Coordinates(double.Parse(splitArr[1]), double.Parse(splitArr[2])));
                 }
             }
 
-            foreach(int pin in meanMap.Keys){
+            foreach (int pin in meanMap.Keys)
+            {
                 double lat;
                 double lng;
-                getMeanLatLng(meanMap[pin],out lat, out lng);
+                getMeanLatLng(meanMap[pin], out lat, out lng);
                 pinMap[pin] = new Coordinates(lat, lng);
             }
 
         }
 
-        private static void getMeanLatLng(List<Coordinates> coordinates, out double lat, out double lng){
+        private static void getMeanLatLng(List<Coordinates> coordinates, out double lat, out double lng)
+        {
             double totalLat = 0.0;
             double totalLng = 0.0;
             lat = 0.0;
             lng = 0.0;
-            if(coordinates == null || coordinates.Count == 0) return;
+            if (coordinates == null || coordinates.Count == 0) return;
 
-            foreach(Coordinates coord in coordinates){
+            foreach (Coordinates coord in coordinates)
+            {
                 totalLat += coord.lat;
                 totalLng += coord.lng;
             }
 
-            lat = totalLat/coordinates.Count;
-            lng = totalLng/coordinates.Count;
+            lat = totalLat / coordinates.Count;
+            lng = totalLng / coordinates.Count;
         }
         private static void Poll(string email, int districtID, double interestedLat, double interestedLng, int minAgeLimit, int minutes = 15)
         {
-            var state = new CallbackState { email = email, districtID = districtID, interestedLat = interestedLat, interestedLng=interestedLng, minAgeLimit = minAgeLimit, minutes = minutes };
+            var state = new CallbackState { email = email, districtID = districtID, interestedLat = interestedLat, interestedLng = interestedLng, minAgeLimit = minAgeLimit, minutes = minutes };
             timer = new Timer(processRequestCallback, state, 1000, Timeout.Infinite);
             Thread.Sleep(Timeout.Infinite);
         }
@@ -114,13 +125,15 @@ namespace cowin_poller
             {
                 center.interestedLat = interestedLat;
                 center.interestedLng = interestedLng;
-                if(pinMap.ContainsKey(center.Pincode)){
+                if (pinMap.ContainsKey(center.Pincode))
+                {
                     center.Lat = pinMap[center.Pincode].lat;
                     center.Long = pinMap[center.Pincode].lng;
                 }
             }
             calendar.Centers.Sort();
             var htmlContent = createContent(calendar, minAgeLimit);
+            if (htmlContent == "") return;
             await sendEmail(email, htmlContent);
         }
 
@@ -165,25 +178,28 @@ namespace cowin_poller
 
                 string centerStr = "";
                 centerStr = centerStr + $"<h1>{center.Name}</h1>";
-                centerStr = centerStr + $"<h2>{center.Address}</h2>";
-                centerStr = centerStr + $"<h2>{center.DistrictName}</h2>";
-                centerStr = centerStr + $"<h2>{center.BlockName}</h2>";
-                centerStr = centerStr + $"<h2>{center.Pincode}</h2>";
-                centerStr = centerStr + $"<h2>{center.Lat},{center.Long}</h2>";
-                centerStr = centerStr + $"<h2>{center.distance}</h2>";
-                
-
-                centerStr = centerStr + $"<div>Fee Type: {center.FeeType}</div>";
-                if (center.VaccineFees != null)
+                if (center.NameL != "")
                 {
-                    foreach (VaccineFee vaccineFee in center.VaccineFees)
-                    {
-                        centerStr = centerStr + $"<div>Vaccine: {vaccineFee.Vaccine}. Fee: {vaccineFee.Fee}</div>";
-                    }
-
+                    centerStr = centerStr + $"<div>{center.NameL}</div>";
                 }
+                centerStr = centerStr + $"<div>{center.Address}</div>";
+                if (center.AddressL != "")
+                {
+                    centerStr = centerStr + $"<div>{center.AddressL}</div>";
+                }
+                centerStr = centerStr + $"<div>{center.DistrictName}</div>";
+                centerStr = centerStr + $"<div>{center.BlockName}</div>";
+                if (center.BlockNameL != "")
+                {
+                    centerStr = centerStr + $"<div>{center.BlockNameL}</div>";
+                }
+                centerStr = centerStr + $"<div>{center.Pincode}</div>";
+                centerStr = centerStr + $"<div>Fee Type: {center.FeeType}</div>";
 
-                result += centerStr + sessionStr;
+                //check hash
+                if (!changeMap.ContainsKey(center.CenterId) || !VerifyHash(changeMap[center.CenterId], GetHash(centerStr)){
+                    result += centerStr + sessionStr;
+                }
             }
 
             return result;
@@ -196,6 +212,39 @@ namespace cowin_poller
             DateTime date = DateTime.Today;
             IFormatProvider culture = new System.Globalization.CultureInfo("hi-IN", true);
             return date.GetDateTimeFormats(culture)[0];
+        }
+
+        private static string GetHash(string input)
+        {
+
+            // Convert the input string to a byte array and compute the hash.
+            byte[] data = sha256Hash.ComputeHash(Encoding.UTF8.GetBytes(input));
+
+            // Create a new Stringbuilder to collect the bytes
+            // and create a string.
+            var sBuilder = new StringBuilder();
+
+            // Loop through each byte of the hashed data
+            // and format each one as a hexadecimal string.
+            for (int i = 0; i < data.Length; i++)
+            {
+                sBuilder.Append(data[i].ToString("x2"));
+            }
+
+            // Return the hexadecimal string.
+            return sBuilder.ToString();
+        }
+
+        // Verify a hash against a string.
+        private static bool VerifyHash(string input, string hash)
+        {
+            // Hash the input.
+            var hashOfInput = GetHash(input);
+
+            // Create a StringComparer an compare the hashes.
+            StringComparer comparer = StringComparer.OrdinalIgnoreCase;
+
+            return comparer.Compare(hashOfInput, hash) == 0;
         }
     }
 }
